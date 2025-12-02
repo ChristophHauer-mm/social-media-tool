@@ -88,6 +88,12 @@ with st.sidebar:
 # --- Hauptlogik ---
 df_customers, df_posts = get_data()
 
+# WICHTIG: Wir wandeln alles in Text um, damit Zahlen-Passwörter (1234) funktionieren
+if not df_customers.empty:
+    df_customers['username'] = df_customers['username'].astype(str).str.strip()
+    df_customers['password'] = df_customers['password'].astype(str).str.strip()
+    # str.strip() entfernt auch versehentliche Leerzeichen am Ende
+
 # ==========================================
 # ADMIN BEREICH
 # ==========================================
@@ -137,16 +143,28 @@ else:
         u = st.text_input("User")
         p = st.text_input("Passwort", type="password")
         if st.button("Login"):
-            # Einfacher Check
-            user_row = df_customers[(df_customers['username'] == u) & (df_customers['password'] == p)]
+            # .strip() entfernt Leerzeichen bei der Eingabe
+            u_clean = str(u).strip()
+            p_clean = str(p).strip()
+            
+            user_row = df_customers[(df_customers['username'] == u_clean) & (df_customers['password'] == p_clean)]
+            
             if not user_row.empty:
                 st.session_state.cust_id = int(user_row.iloc[0]['id'])
                 st.rerun()
             else:
-                st.error("Falsch")
+                st.error("Benutzername oder Passwort falsch.")
+                # Debug-Hilfe (nur für dich, kannst du später löschen):
+                # st.write("Ich habe gesucht nach:", u_clean, p_clean)
+                # st.write("In der Datenbank steht:", df_customers[['username', 'password']])
                 
-    # --- DASHBOARD ---
+    # --- DASHBOARD  ---
     else:
+        # Hier muss der Code von vorhin für das Dashboard hin (Facebook etc.)
+        # Kopiere einfach den unteren Teil ("else: me = ...") aus dem vorherigen Code 
+        # oder soll ich dir die ganze Datei nochmal komplett schicken?
+        # Um Fehler zu vermeiden, hier der ganze Restblock:
+        
         me = df_customers[df_customers['id'] == st.session_state.cust_id].iloc[0]
         st.title(f"Hallo {me['company_name']} 👋")
         
@@ -161,13 +179,11 @@ else:
             else:
                 st.warning("⚠️ Noch nicht verbunden")
                 
-                # OAUTH LINK GENERIEREN
                 facebook = OAuth2Session(FB_CLIENT_ID, redirect_uri=REDIRECT_URI, scope=["pages_show_list", "pages_read_engagement", "pages_manage_posts"])
                 authorization_url, state = facebook.authorization_url(AUTHORIZATION_BASE_URL)
                 
                 st.link_button("👉 Jetzt mit Facebook verbinden", authorization_url)
                 
-                # RÜCKKEHR VON FACEBOOK
                 try:
                     if "code" in st.query_params:
                         code = st.query_params["code"]
