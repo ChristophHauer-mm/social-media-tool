@@ -1,200 +1,177 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import sqlite3
 import time
+from streamlit_gsheets import GSheetsConnection
 
-# --- Konfiguration & Design ---
-st.set_page_config(
-    page_title="Social Media Agentur Tool", 
-    page_icon="🚀",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- Konfiguration ---
+st.set_page_config(page_title="Social Media Agentur Tool", page_icon="🚀", layout="wide")
 
-# --- Datenbank Management (Identisch wie vorher) ---
-def init_db():
-    conn = sqlite3.connect('agentur_data.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS customers
-                 (id INTEGER PRIMARY KEY, company_name TEXT, username TEXT, password TEXT, ig_token TEXT, fb_token TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS posts
-                 (id INTEGER PRIMARY KEY, customer_id INTEGER, caption TEXT, media_name TEXT, status TEXT, date TEXT)''')
-    conn.commit()
-    return conn
+# --- Google Sheets Verbindung ---
+# Wir holen uns die Verbindung aus den Secrets
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-conn = init_db()
+# --- Hilfsfunktionen für Google Sheets ---
 
-# --- Hilfsfunktionen (Identisch wie vorher) ---
-def get_customers():
-    return pd.read_sql("SELECT * FROM customers", conn)
+def get_data():
+    # Lädt die Tabelle neu. Wir gehen davon aus, dass Blatt 1 "Customers" und Blatt 2 "Posts" ist.
+    # Um es einfach zu halten, nutzen wir hier EINE Tabelle mit Spalten für alles oder filtern.
+    # BESSERER WEG FÜR DEN ANFANG: Wir nutzen Worksheets.
+    
+    # Wir lesen das erste Arbeitsblatt (sollte 'Customers' heißen oder wir nehmen einfach Worksheets[0])
+    try:
+        df_customers = conn.read(worksheet="Customers", usecols=[0,1,2,3,4,5], ttl=0)
+        # ttl=0 bedeutet: Nicht cachen, immer frisch laden!
+    except:
+        # Falls leer/nicht existent, leeres DF erstellen
+        df_customers = pd.DataFrame(columns=["id", "company_name", "username", "password", "ig_token", "fb_token"])
+    
+    try:
+        df_posts = conn.read(worksheet="Posts", usecols=[0,1,2,3,4,5], ttl=0)
+    except:
+        df_posts = pd.DataFrame(columns=["id", "customer_id", "caption", "media_name", "status", "date"])
+        
+    return df_customers, df_posts
 
-def add_customer(company_name, username, password):
-    c = conn.cursor()
-    c.execute("SELECT * FROM customers WHERE username = ?", (username,))
-    if c.fetchone(): return False
-    c.execute("INSERT INTO customers (company_name, username, password, ig_token, fb_token) VALUES (?, ?, ?, '', '')", (company_name, username, password, '', ''))
-    conn.commit()
+def save_customer(company, user, pw):
+    df_customers, df_posts = get_data()
+    
+    # Check ob User existiert
+    if not df_customers.empty and user in df_customers['username'].values:
+        return False
+    
+    # Neue ID generieren
+    new_id = 1 if df_customers.empty else df_customers['id'].max() + 1
+    
+    new_entry = pd.DataFrame([{
+        "id": new_id,
+        "company_name": company,
+        "username": user,
+        "password": pw,
+        "ig_token": "",
+        "fb_token": ""
+    }])
+    
+    updated_df = pd.concat([df_customers, new_entry], ignore_index=True)
+    conn.update(worksheet="Customers", data=updated_df)
     return True
 
-def check_login(username, password):
-    c = conn.cursor()
-    c.execute("SELECT * FROM customers WHERE username = ? AND password = ?", (username, password))
-    return c.fetchone()
-
-def save_post(customer_id, caption, media_name, date):
-    c = conn.cursor()
-    c.execute("INSERT INTO posts (customer_id, caption, media_name, status, date) VALUES (?, ?, ?, 'Geplant', ?)", (int(customer_id), caption, media_name, date))
-    conn.commit()
-
-def get_posts(customer_id=None):
-    query = "SELECT posts.id, customers.company_name, posts.caption, posts.status, posts.date FROM posts LEFT JOIN customers ON posts.customer_id = customers.id"
-    if customer_id: query += f" WHERE posts.customer_id = {customer_id}"
-    return pd.read_sql(query, conn)
+def save_post(customer_id, caption, media, date_str):
+    df_customers, df_posts = get_data()
+    
+    new_id = 1 if df_posts.empty else df_posts['id'].max() + 1
+    
+    new_entry = pd.DataFrame([{
+        "id": new_id,
+        "customer_id": int(customer_id),
+        "caption": caption,
+        "media_name": media,
+        "status": "Geplant",
+        "date": date_str
+    }])
+    
+    updated_df = pd.concat([df_posts, new_entry], ignore_index=True)
+    conn.update(worksheet="Posts", data=updated_df)
 
 def update_token(customer_id, platform, token):
-    c = conn.cursor()
-    col = "ig_token" if platform == "ig" else "fb_token"
-    c.execute(f"UPDATE customers SET {col} = ? WHERE id = ?", (token, customer_id))
-    conn.commit()
+    df_customers, df_posts = get_data()
+    
+    # Zeile finden und updaten
+    mask = df_customers['id'] == customer_id
+    if platform == 'ig':
+        df_customers.loc[mask, 'ig_token'] = token
+    else:
+        df_customers.loc[mask, 'fb_token'] = token
+        
+    conn.update(worksheet="Customers", data=df_customers)
 
-# --- Sidebar: Logo & Navigation ---
+# --- Sidebar ---
 with st.sidebar:
-    # Hier simulieren wir dein Agentur-Logo mit einem Platzhalter-Bild aus dem Internet
     st.image("https://cdn-icons-png.flaticon.com/512/1055/1055666.png", width=100)
-    st.title("Agentur Cockpit")
+    st.title("Cloud Cockpit")
+    st.caption("Connected to Google Sheets 🟢")
     st.markdown("---")
-    user_role = st.radio("Ansicht wählen:", ["Admin (Agentur)", "Kunde (Extern)"])
-    st.markdown("---")
-    st.caption("© 2024 SocialMaster Tool v1.0")
+    user_role = st.radio("Login als:", ["Admin", "Kunde"])
+
+# --- Daten laden ---
+try:
+    df_customers, df_posts = get_data()
+except Exception as e:
+    st.error(f"Verbindungsfehler zu Google Sheets! Bitte prüfen: {e}")
+    st.stop()
 
 # ==========================================
-# ADMIN ANSICHT
+# ADMIN
 # ==========================================
-if user_role == "Admin (Agentur)":
-    st.title("👨‍💻 Agentur Dashboard")
+if user_role == "Admin":
+    st.title("👨‍💻 Agentur Dashboard (Cloud)")
     
-    # Metriken anzeigen (Sieht professioneller aus)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Kunden aktiv", len(get_customers()))
-    m2.metric("Posts geplant", len(get_posts()))
-    m3.metric("System Status", "Online 🟢")
-    
-    st.markdown("---")
-    
-    tab1, tab2, tab3 = st.tabs(["✍️ Neuer Post", "👥 Kunden verwalten", "📊 Übersicht"])
+    tab1, tab2 = st.tabs(["Neuer Post", "Kunden"])
     
     with tab1:
-        st.subheader("Content Planung")
-        customers = get_customers()
-        if customers.empty:
-            st.warning("⚠️ Bitte erst Kunden anlegen!")
+        if df_customers.empty:
+            st.warning("Noch keine Kunden.")
         else:
-            col1, col2 = st.columns([1, 2], gap="large")
-            with col1:
-                selected_company = st.selectbox("Kunde auswählen", customers['company_name'])
-                customer_id = int(customers[customers['company_name'] == selected_company]['id'].values[0])
-                
-                uploaded_file = st.file_uploader("Media Datei", type=['png', 'jpg', 'mp4'])
-                caption = st.text_area("Caption / Text", height=150)
-                post_date = st.date_input("Datum")
-                
-                if st.button("Post einplanen 📅", type="primary", use_container_width=True):
-                    if uploaded_file and caption:
-                        save_post(customer_id, caption, uploaded_file.name, str(post_date))
-                        st.success("Gespeichert!")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("Daten fehlen.")
-            with col2:
-                st.info("Vorschau")
-                if uploaded_file:
-                    st.image(uploaded_file) if uploaded_file.type.startswith('image') else st.info("Video")
+            c_list = df_customers['company_name'].unique()
+            selected_comp = st.selectbox("Kunde", c_list)
+            # ID holen
+            c_row = df_customers[df_customers['company_name'] == selected_comp].iloc[0]
+            c_id = int(c_row['id'])
+            
+            uploaded = st.file_uploader("Media")
+            cap = st.text_area("Text")
+            dat = st.date_input("Datum")
+            
+            if st.button("Speichern ☁️"):
+                if uploaded and cap:
+                    save_post(c_id, cap, uploaded.name, str(dat))
+                    st.success("In Google Sheet gespeichert!")
+                    time.sleep(1)
+                    st.rerun()
 
     with tab2:
-        col_form, col_list = st.columns([1, 2], gap="large")
-        with col_form:
-            st.subheader("Neuer Kunde")
-            with st.form("new_customer"):
-                c_company = st.text_input("Firmenname")
-                c_user = st.text_input("Benutzername")
-                c_pass = st.text_input("Passwort", type="password")
-                if st.form_submit_button("Kunde anlegen ✨"):
-                    if c_company and c_user and c_pass:
-                        if add_customer(c_company, c_user, c_pass):
-                            st.success("Erstellt!")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("User existiert schon!")
-        with col_list:
-            st.subheader("Kundenliste")
-            st.dataframe(get_customers()[['company_name', 'username']], use_container_width=True)
-
-    with tab3:
-        st.dataframe(get_posts(), use_container_width=True)
+        with st.form("new_c"):
+            c_name = st.text_input("Firma")
+            c_user = st.text_input("User")
+            c_pw = st.text_input("Passwort", type="password")
+            if st.form_submit_button("Anlegen"):
+                if save_customer(c_name, c_user, c_pw):
+                    st.success("Kunde angelegt!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Fehler oder User existiert schon.")
+        
+        st.write("Datenbank Inhalt:")
+        st.dataframe(df_customers)
 
 # ==========================================
-# KUNDEN ANSICHT (Login Screen)
+# KUNDE
 # ==========================================
 else:
-    if 'logged_in_customer_id' not in st.session_state:
-        st.session_state.logged_in_customer_id = None
-
-    if st.session_state.logged_in_customer_id is None:
-        # Zentriertes Login-Design
-        col_spacer1, col_login, col_spacer2 = st.columns([1, 2, 1])
-        with col_login:
-            st.markdown("<h2 style='text-align: center;'>🔐 Kunden Login</h2>", unsafe_allow_html=True)
-            st.markdown("<p style='text-align: center;'>Bitte melden Sie sich an.</p>", unsafe_allow_html=True)
-            
-            with st.form("login_form"):
-                username = st.text_input("Benutzername")
-                password = st.text_input("Passwort", type="password")
-                submit = st.form_submit_button("Anmelden", use_container_width=True, type="primary")
-                
-                if submit:
-                    user = check_login(username, password)
-                    if user:
-                        st.session_state.logged_in_customer_id = user[0]
-                        st.session_state.logged_in_name = user[1]
-                        st.rerun()
-                    else:
-                        st.error("Daten falsch.")
+    if 'cust_id' not in st.session_state: st.session_state.cust_id = None
+    
+    if st.session_state.cust_id is None:
+        st.header("Kunden Login")
+        u = st.text_input("User")
+        p = st.text_input("Passwort", type="password")
+        if st.button("Login"):
+            # Suche in DF
+            user_row = df_customers[(df_customers['username'] == u) & (df_customers['password'] == p)]
+            if not user_row.empty:
+                st.session_state.cust_id = int(user_row.iloc[0]['id'])
+                st.rerun()
+            else:
+                st.error("Falsch")
     else:
-        # Eingeloggter Bereich
-        customers = get_customers()
-        cust_data = customers[customers['id'] == st.session_state.logged_in_customer_id].iloc[0]
-        
-        col_header, col_logout = st.columns([3, 1])
-        col_header.title(f"Moin, {cust_data['company_name']}! 👋")
-        col_logout.write("") 
-        if col_logout.button("Abmelden"):
-            st.session_state.logged_in_customer_id = None
+        # Eingeloggt
+        me = df_customers[df_customers['id'] == st.session_state.cust_id].iloc[0]
+        st.title(f"Hallo {me['company_name']}")
+        if st.button("Logout"): 
+            st.session_state.cust_id = None
             st.rerun()
             
-        st.markdown("---")
-        
-        col1, col2 = st.columns(2, gap="large")
-        with col1:
-            st.subheader("Ihre Kanäle")
-            # Status Cards
-            st.markdown(f"""
-            <div style="padding:15px; border-radius:10px; border:1px solid #ddd; margin-bottom:10px;">
-                <strong>Instagram:</strong> {'✅ Verbunden' if cust_data['ig_token'] else '❌ Getrennt'}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if not cust_data['ig_token']:
-                fake_token = st.text_input("Token eingeben (Simuliert)")
-                if st.button("Verbinden"):
-                    update_token(cust_data['id'], 'ig', fake_token)
-                    st.rerun()
-            else:
-                if st.button("Trennen"): update_token(cust_data['id'], 'ig', ''); st.rerun()
-
-        with col2:
-            st.subheader("Aktuelle Posts")
-            my_posts = get_posts(int(cust_data['id']))
-            st.dataframe(my_posts[['caption', 'date', 'status']], use_container_width=True)
+        st.subheader("Deine Posts (aus Google Sheets)")
+        # Filter posts
+        my_posts = df_posts[df_posts['customer_id'] == me['id']]
+        st.dataframe(my_posts)
